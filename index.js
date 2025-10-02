@@ -21,7 +21,7 @@ app.use(helmet({
     directives: {
       "default-src": ["'none'"],
       "connect-src": ["'self'", "https://api.github.com"],
-      "img-src": ["'self'", "https:" , "data:"],
+      "img-src": ["'self'", "https:", "data:"],
       "style-src": ["'self'", "'unsafe-inline'"],
       "script-src": ["'self'"]
     },
@@ -67,7 +67,7 @@ const DEFAULTS = {
   ref:   process.env.GITHUB_REF   || 'main',
 };
 
-// saneo simple de segmentos
+// ---------- Helpers ----------
 function safeSeg(s, fallback) {
   const v = (s ?? '').toString().trim();
   if (!v) return fallback;
@@ -76,7 +76,72 @@ function safeSeg(s, fallback) {
   return v.replace(/[\r\n\t]/g, '');
 }
 
-// Health
+function getClientIp(req) {
+  // Con trust proxy, req.ip ya toma el primer X-Forwarded-For
+  // Aun así, mostramos solo el primer IP "limpio"
+  const ip = (req.ip || '').split(',')[0].trim();
+  return ip || 'desconocida';
+}
+
+function renderUnauthorizedHTML({ ip }) {
+  // Página 401 simple y agradable
+  return `<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>No autorizado</title>
+<style>
+  :root { --bg:#0f1221; --card:#1a1f36; --text:#e6e9f2; --muted:#aab2cf; --accent:#ff5370; }
+  * { box-sizing: border-box; }
+  body {
+    margin:0; min-height:100svh; display:grid; place-items:center;
+    background: radial-gradient(90rem 90rem at 50% -20%, #222a4d 10%, var(--bg) 45%);
+    font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, 'Helvetica Neue', Arial, 'Noto Sans', 'Apple Color Emoji','Segoe UI Emoji', 'Segoe UI Symbol';
+    color: var(--text);
+  }
+  .card {
+    width:min(560px, 92vw);
+    background: linear-gradient(180deg, rgba(255,255,255,.04), rgba(255,255,255,.02));
+    border:1px solid rgba(255,255,255,.08);
+    border-radius:16px; padding:28px 24px;
+    box-shadow: 0 8px 30px rgba(0,0,0,.35), inset 0 1px 0 rgba(255,255,255,.05);
+    backdrop-filter: blur(6px);
+    text-align:center;
+  }
+  .face {
+    font-size:76px; line-height:1; margin-bottom:6px;
+    filter: drop-shadow(0 6px 12px rgba(0,0,0,.35));
+  }
+  h1 { margin:8px 0 6px; font-size:28px; letter-spacing:.3px; }
+  p  { margin:6px 0 0; color: var(--muted); }
+  .ip {
+    display:inline-block; margin-top:14px; padding:8px 12px; border-radius:10px;
+    background:#121629; color:#cbd2e9; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    border:1px solid rgba(255,255,255,.08);
+  }
+  .hint { margin-top:16px; font-size:14px; color:#97a0bd; }
+  .btn {
+    margin-top:18px; display:inline-block; padding:10px 14px; border-radius:10px;
+    background: var(--accent); color:white; text-decoration:none; font-weight:600;
+    box-shadow: 0 8px 20px rgba(255,83,112,.35);
+  }
+</style>
+</head>
+<body>
+  <main class="card" role="main" aria-labelledby="t">
+    <div class="face" aria-hidden="true">😢</div>
+    <h1 id="t">No autorizado</h1>
+    <p>Esta ruta requiere una <strong>API Key válida</strong> en el header <code>x-api-key</code>.</p>
+    <div class="ip">Tu IP: ${ip}</div>
+    <p class="hint">Si crees que es un error, verifica la clave, el origen permitido (CORS) y vuelve a intentar.</p>
+    <a class="btn" href="/health">Ir al healthcheck</a>
+  </main>
+</body>
+</html>`;
+}
+
+// ---------- Rutas ----------
 app.get('/health', (_req, res) => {
   res.json({ ok: true, time: new Date().toISOString() });
 });
@@ -104,11 +169,16 @@ app.get('/obtener-script', async (req, res) => {
     // 1) Auth
     const serverKey = process.env.API_KEY;
     const clientKey = req.headers['x-api-key'];
+
     if (!serverKey) {
       return res.status(500).json({ error: 'CONFIG: Falta API_KEY en variables de entorno' });
     }
     if (clientKey !== serverKey) {
-      return res.status(401).json({ error: 'No autorizado' });
+      // Respuesta HTML bonita para 401
+      const ip = getClientIp(req);
+      res.set('Cache-Control', 'no-store');
+      res.type('html');
+      return res.status(401).send(renderUnauthorizedHTML({ ip }));
     }
 
     // 2) Params saneados o defaults
