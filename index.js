@@ -6,14 +6,13 @@ const cors = require('cors');
 const rateLimit = require('express-rate-limit');
 const morgan = require('morgan');
 
-// Opcional en local; en Railway no es necesario
 try { require('dotenv').config(); } catch (_) {}
 
 const app = express();
 
-// --- Seguridad base
+// -------- Seguridad base
 app.disable('x-powered-by');
-app.set('trust proxy', 1); // importante detrás del proxy de Railway
+app.set('trust proxy', 1);
 
 app.use(helmet({
   contentSecurityPolicy: {
@@ -29,7 +28,7 @@ app.use(helmet({
   crossOriginEmbedderPolicy: false,
 }));
 
-// CORS (configurable por env; por defecto permite todos *solo* para pruebas)
+// CORS
 const ACCESS_ORIGIN = process.env.CORS_ORIGIN || '*';
 app.use(cors({
   origin: ACCESS_ORIGIN === '*' ? true : ACCESS_ORIGIN,
@@ -38,11 +37,11 @@ app.use(cors({
   maxAge: 86400,
 }));
 
-// Parsers mínimos (esta API es GET-centric, límites bajos)
+// Parsers (límites bajos)
 app.use(express.json({ limit: '1kb' }));
 app.use(express.urlencoded({ extended: false, limit: '1kb' }));
 
-// Rate limit global
+// Rate limit
 const limiter = rateLimit({
   windowMs: 60 * 1000,
   max: Number(process.env.RATE_LIMIT_MAX || 60),
@@ -59,11 +58,11 @@ app.use(morgan(':rid :method :url :status :response-time ms'));
 const PORT = process.env.PORT || 3000;
 const GITHUB_API = 'https://api.github.com';
 
-// Defaults (tu caso real)
+// Defaults de tu repo
 const DEFAULTS = {
   owner: process.env.GITHUB_OWNER || 'OkumaruSenpai',
   repo:  process.env.GITHUB_REPO  || 'STCS',
-  path:  process.env.GITHUB_PATH  || 'myST', // archivo o directorio
+  path:  process.env.GITHUB_PATH  || 'myST',
   ref:   process.env.GITHUB_REF   || 'main',
 };
 
@@ -77,14 +76,24 @@ function safeSeg(s, fallback) {
 }
 
 function getClientIp(req) {
-  // Con trust proxy, req.ip ya toma el primer X-Forwarded-For
-  // Aun así, mostramos solo el primer IP "limpio"
   const ip = (req.ip || '').split(',')[0].trim();
   return ip || 'desconocida';
 }
 
+async function notifyDiscord({ ip, path, ua }) {
+  try {
+    const url = process.env.DISCORD_WEBHOOK;
+    if (!url) return;
+    await axios.post(url, {
+      // Sencillo: content plano (funciona siempre)
+      content: `🚨 **Acceso no autorizado**\n**IP:** \`${ip}\`\n**Ruta:** \`${path}\`\n**UA:** \`${ua || 'n/a'}\``,
+    }, { timeout: 5000 });
+  } catch (err) {
+    console.error('Error enviando webhook a Discord:', err.message);
+  }
+}
+
 function renderUnauthorizedHTML({ ip }) {
-  // Página 401 simple y agradable
   return `<!doctype html>
 <html lang="es">
 <head>
@@ -93,26 +102,22 @@ function renderUnauthorizedHTML({ ip }) {
 <title>No autorizado</title>
 <style>
   :root { --bg:#0f1221; --card:#1a1f36; --text:#e6e9f2; --muted:#aab2cf; --accent:#ff5370; }
-  * { box-sizing: border-box; }
+  * { box-sizing:border-box; }
   body {
     margin:0; min-height:100svh; display:grid; place-items:center;
     background: radial-gradient(90rem 90rem at 50% -20%, #222a4d 10%, var(--bg) 45%);
-    font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, 'Helvetica Neue', Arial, 'Noto Sans', 'Apple Color Emoji','Segoe UI Emoji', 'Segoe UI Symbol';
+    font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Arial;
     color: var(--text);
   }
   .card {
-    width:min(560px, 92vw);
+    width:min(560px,92vw);
     background: linear-gradient(180deg, rgba(255,255,255,.04), rgba(255,255,255,.02));
     border:1px solid rgba(255,255,255,.08);
-    border-radius:16px; padding:28px 24px;
+    border-radius:16px; padding:28px 24px; text-align:center;
     box-shadow: 0 8px 30px rgba(0,0,0,.35), inset 0 1px 0 rgba(255,255,255,.05);
     backdrop-filter: blur(6px);
-    text-align:center;
   }
-  .face {
-    font-size:76px; line-height:1; margin-bottom:6px;
-    filter: drop-shadow(0 6px 12px rgba(0,0,0,.35));
-  }
+  .face { font-size:76px; line-height:1; margin-bottom:8px; filter: drop-shadow(0 6px 12px rgba(0,0,0,.35)); }
   h1 { margin:8px 0 6px; font-size:28px; letter-spacing:.3px; }
   p  { margin:6px 0 0; color: var(--muted); }
   .ip {
@@ -134,7 +139,7 @@ function renderUnauthorizedHTML({ ip }) {
     <h1 id="t">No autorizado</h1>
     <p>Esta ruta requiere una <strong>API Key válida</strong> en el header <code>x-api-key</code>.</p>
     <div class="ip">Tu IP: ${ip}</div>
-    <p class="hint">Si crees que es un error, verifica la clave, el origen permitido (CORS) y vuelve a intentar.</p>
+    <p class="hint">Si crees que es un error, verifica la clave/CORS y vuelve a intentar.</p>
     <a class="btn" href="/health">Ir al healthcheck</a>
   </main>
 </body>
@@ -150,6 +155,7 @@ app.get('/health', (_req, res) => {
 app.get('/debug-env', (_req, res) => {
   res.json({
     API_KEY_present: Boolean(process.env.API_KEY),
+    DISCORD_WEBHOOK_present: Boolean(process.env.DISCORD_WEBHOOK),
     owner: DEFAULTS.owner,
     repo: DEFAULTS.repo,
     path: DEFAULTS.path,
@@ -161,12 +167,9 @@ app.get('/debug-env', (_req, res) => {
  * GET /obtener-script
  * Header obligatorio: x-api-key: <API_KEY>
  * Query opcional: owner, repo, path, ref
- * - Si path es directorio -> devuelve listado mínimo (files[])
- * - Si path es archivo -> devuelve el contenido RAW (text/plain)
  */
 app.get('/obtener-script', async (req, res) => {
   try {
-    // 1) Auth
     const serverKey = process.env.API_KEY;
     const clientKey = req.headers['x-api-key'];
 
@@ -174,20 +177,21 @@ app.get('/obtener-script', async (req, res) => {
       return res.status(500).json({ error: 'CONFIG: Falta API_KEY en variables de entorno' });
     }
     if (clientKey !== serverKey) {
-      // Respuesta HTML bonita para 401
       const ip = getClientIp(req);
+      // Notificar a Discord acceso no autorizado
+      notifyDiscord({ ip, path: req.originalUrl || req.url, ua: req.headers['user-agent'] });
       res.set('Cache-Control', 'no-store');
       res.type('html');
       return res.status(401).send(renderUnauthorizedHTML({ ip }));
     }
 
-    // 2) Params saneados o defaults
+    // Params
     const owner = safeSeg(req.query.owner, DEFAULTS.owner);
     const repo  = safeSeg(req.query.repo,  DEFAULTS.repo);
     const path  = safeSeg(req.query.path,  DEFAULTS.path);
     const ref   = safeSeg(req.query.ref,   DEFAULTS.ref);
 
-    // 3) Headers para GitHub
+    // GitHub headers
     const headers = {
       Accept: 'application/vnd.github+json',
       'User-Agent': 'railway-github-proxy/1.0',
@@ -196,7 +200,6 @@ app.get('/obtener-script', async (req, res) => {
       headers.Authorization = `token ${process.env.GITHUB_TOKEN}`;
     }
 
-    // 4) Llamada a /contents
     const url = `${GITHUB_API}/repos/${owner}/${repo}/contents/${encodeURIComponent(path)}?ref=${encodeURIComponent(ref)}`;
     const gh = await axios.get(url, { headers, validateStatus: () => true });
 
@@ -207,29 +210,23 @@ app.get('/obtener-script', async (req, res) => {
       return res.status(502).json({ error: 'Error desde GitHub', status: gh.status });
     }
 
-    // 5) Directorio -> listado mínimo
     if (Array.isArray(gh.data)) {
       const files = gh.data
         .filter(i => i && i.type === 'file')
         .map(i => ({
-          name: i.name,
-          path: i.path,
-          size: i.size,
-          download_url: i.download_url,
-          sha: i.sha,
+          name: i.name, path: i.path, size: i.size,
+          download_url: i.download_url, sha: i.sha,
         }));
       return res.json({ owner, repo, ref, path, files });
     }
 
-    // 6) Archivo -> traer RAW y devolver texto
     if (gh.data && gh.data.type === 'file' && gh.data.download_url) {
       const rawHeaders = {
         Accept: 'application/vnd.github.v3.raw',
         'User-Agent': 'railway-github-proxy/1.0',
       };
-      if (process.env.GITHUB_TOKEN) {
-        rawHeaders.Authorization = `token ${process.env.GITHUB_TOKEN}`;
-      }
+      if (process.env.GITHUB_TOKEN) rawHeaders.Authorization = `token ${process.env.GITHUB_TOKEN}`;
+
       const raw = await axios.get(gh.data.download_url, { headers: rawHeaders, responseType: 'text', validateStatus: () => true });
       if (raw.status >= 200 && raw.status < 300) {
         res.type('text/plain; charset=utf-8');
