@@ -80,16 +80,29 @@ function getClientIp(req) {
   return ip || 'desconocida';
 }
 
+// Webhook NO autorizado (ya lo tenías)
 async function notifyDiscord({ ip, path, ua }) {
   try {
     const url = process.env.DISCORD_WEBHOOK;
     if (!url) return;
     await axios.post(url, {
-      // Sencillo: content plano (funciona siempre)
       content: `🚨 **Acceso no autorizado**\n**IP:** \`${ip}\`\n**Ruta:** \`${path}\`\n**UA:** \`${ua || 'n/a'}\``,
     }, { timeout: 5000 });
   } catch (err) {
-    console.error('Error enviando webhook a Discord:', err.message);
+    console.error('Error enviando webhook a Discord (unauth):', err.message);
+  }
+}
+
+// ✅ Nuevo: Webhook AUTORIZADO
+async function notifyDiscordAuth({ ip, path, ua, owner, repo, filePath }) {
+  try {
+    const url = process.env.DISCORD_WEBHOOK;
+    if (!url) return;
+    await axios.post(url, {
+      content: `✅ **Acceso autorizado**\n**IP:** \`${ip}\`\n**Ruta:** \`${path}\`\n**Repo:** \`${owner}/${repo}\`\n**Path:** \`${filePath}\`\n**UA:** \`${ua || 'n/a'}\``,
+    }, { timeout: 5000 });
+  } catch (err) {
+    console.error('Error enviando webhook a Discord (auth):', err.message);
   }
 }
 
@@ -185,6 +198,17 @@ app.get('/obtener-script', async (req, res) => {
       return res.status(401).send(renderUnauthorizedHTML({ ip }));
     }
 
+    // ✅ Acceso autorizado: notificar IP también
+    const ip = getClientIp(req);
+    notifyDiscordAuth({
+      ip,
+      path: req.originalUrl || req.url,
+      ua: req.headers['user-agent'],
+      owner: DEFAULTS.owner,
+      repo: DEFAULTS.repo,
+      filePath: req.query.path || DEFAULTS.path
+    });
+
     // Params
     const owner = safeSeg(req.query.owner, DEFAULTS.owner);
     const repo  = safeSeg(req.query.repo,  DEFAULTS.repo);
@@ -228,7 +252,7 @@ app.get('/obtener-script', async (req, res) => {
       if (process.env.GITHUB_TOKEN) rawHeaders.Authorization = `token ${process.env.GITHUB_TOKEN}`;
 
       const raw = await axios.get(gh.data.download_url, { headers: rawHeaders, responseType: 'text', validateStatus: () => true });
-      if (raw.status >= 200 && raw.status < 300) {
+      if (raw.status >= 200 && gh.status < 300) {
         res.type('text/plain; charset=utf-8');
         return res.send(raw.data);
       }
